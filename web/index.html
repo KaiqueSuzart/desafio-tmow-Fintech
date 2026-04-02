@@ -1,0 +1,222 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Extrator de Tabelas HTML</title>
+<link rel="stylesheet" href="/assets/style.css?v=20260402p">
+</head>
+<body>
+
+<header class="app-header">
+  <h1>Extrator de Tabelas HTML</h1>
+  <nav class="tabs">
+    <button class="tab-btn active" data-tab="tab-extrair">Extrair</button>
+    <button class="tab-btn" data-tab="tab-gravadas">Tabelas gravadas</button>
+  </nav>
+</header>
+
+<main>
+  <!-- ===== ABA EXTRAIR ===== -->
+  <section id="tab-extrair" class="tab-panel">
+    <form id="form-scrape" autocomplete="off">
+      <div class="form-grid">
+
+        <label for="url">URL da página</label>
+        <input type="url" id="url" placeholder="https://…" required>
+
+        <label for="wait-selector">O que esperar</label>
+        <div class="select-custom-wrap">
+          <select id="wait-selector">
+            <option value="__auto__">Automático</option>
+            <option value="table">table</option>
+            <option value="#lista">#lista</option>
+            <option value="main">main</option>
+            <option value="body">body</option>
+            <option value="#conteudo">#conteudo</option>
+            <option value=".table-responsive">.table-responsive</option>
+            <option value="__custom__">Outro…</option>
+          </select>
+          <input type="text" id="wait-selector-custom" class="hidden" placeholder="Seletor CSS personalizado">
+        </div>
+        <div id="wait-detected-hint" class="hint"></div>
+
+        <label for="table-index">Índice da tabela</label>
+        <input type="number" id="table-index" value="0" min="0">
+
+        <div class="checkbox-line">
+          <input type="checkbox" id="skip-first-col">
+          <label for="skip-first-col">Ignorar 1.ª coluna (ex.: "Detalhar")</label>
+        </div>
+
+        <div class="checkbox-line">
+          <input type="checkbox" id="iframe-auto">
+          <label for="iframe-auto">Detetar iframe automaticamente</label>
+        </div>
+
+        <label for="iframe-selector" class="full-row">Iframe — seletor manual</label>
+        <input type="text" id="iframe-selector" class="full-row" placeholder="ex.: #iframeResult">
+
+        <div class="checkbox-line">
+          <input type="checkbox" id="paginacao-portal">
+          <label for="paginacao-portal">Paginação na URL (Portal)</label>
+        </div>
+
+        <label for="periodo-de">Período de</label>
+        <input type="month" id="periodo-de">
+
+        <label for="periodo-ate">Período até</label>
+        <input type="month" id="periodo-ate">
+
+        <label for="tamanho-pagina">Linhas por página</label>
+        <input type="number" id="tamanho-pagina" value="5" min="1" max="500">
+
+        <label for="max-paginas">Máx. páginas</label>
+        <input type="number" id="max-paginas" value="1" min="1" max="500">
+
+        <div class="checkbox-line">
+          <input type="checkbox" id="buscar-todas">
+          <label for="buscar-todas">Buscar todas as páginas</label>
+        </div>
+
+        <fieldset class="full-row detail-mode-fieldset">
+          <legend>Dados da página «Ver detalhe» (ex.: e-publica)</legend>
+          <div class="radio-line">
+            <input type="radio" name="detail-mode" id="detail-mode-merge" value="merge" checked>
+            <label for="detail-mode-merge">Juntar na tabela — o servidor acrescenta colunas <code>det_*</code> (CNPJ, licitação, responsáveis, etc.) à grelha.</label>
+          </div>
+          <div class="radio-line">
+            <input type="radio" name="detail-mode" id="detail-mode-modal" value="modal">
+            <label for="detail-mode-modal">Só listagem na tabela — clique numa linha para abrir um painel com toda a informação do detalhe.</label>
+          </div>
+          <div class="checkbox-line" id="wrap-detail-auto-fetch">
+            <input type="checkbox" id="detail-auto-fetch" checked>
+            <label for="detail-auto-fetch">Se «juntar na tabela»: após carregar, buscar detalhes automaticamente em lotes (pode demorar muito).</label>
+          </div>
+        </fieldset>
+
+        <details class="full-row extra-url-params">
+          <summary>Parâmetros extra na URL (opcional)</summary>
+          <p class="hint">Chave e valor só são enviados se ambos estiverem preenchidos.</p>
+          <div id="dynamic-params-container"></div>
+          <button type="button" id="btn-add-param" class="btn btn-small">Adicionar parâmetro</button>
+        </details>
+      </div>
+
+      <div class="hint" style="margin-top:0.5rem">
+        Dica: Se o CSS/JS parecer desatualizado, pressione Ctrl+F5 para limpar cache.
+        <span id="hint-epublica-pages" style="display:none;margin-top:0.35rem">
+          <strong>e-publica (contratos):</strong> <em>Máx. páginas</em> e <em>Buscar todas</em> controlam quantas folhas da listagem são lidas.
+          Com «juntar na tabela», use também a opção de busca automática de detalhes ou «Buscar detalhes» / «Trazer detalhe» por linha.
+        </span>
+      </div>
+
+      <div class="btn-row">
+        <button type="submit" id="btn-scrape" class="btn btn-primary">Carregar dados</button>
+      </div>
+    </form>
+
+    <div id="status-msg" class="status-msg"></div>
+
+    <!-- Modal detalhe (modo painel) -->
+    <div id="detail-modal" class="detail-modal hidden" aria-hidden="true">
+      <div class="detail-modal-backdrop" id="detail-modal-backdrop"></div>
+      <div class="detail-modal-panel" role="dialog" aria-labelledby="detail-modal-title">
+        <div class="detail-modal-header">
+          <h2 id="detail-modal-title">Detalhe do registo</h2>
+          <button type="button" id="detail-modal-close" class="btn-icon" aria-label="Fechar">&times;</button>
+        </div>
+        <div id="detail-modal-body" class="detail-modal-body"></div>
+      </div>
+    </div>
+
+    <!-- Resultado -->
+    <div id="result-area" class="hidden-panel">
+      <h2>Resultado</h2>
+
+      <div id="table-picker-wrap" class="hidden-panel">
+        <label>Tabela:</label>
+        <select id="table-picker"></select>
+        <div id="table-checkboxes"></div>
+      </div>
+
+      <div id="columns-area">
+        <h3>Colunas <small>(arraste para reordenar)</small></h3>
+        <div id="columns-list"></div>
+      </div>
+
+      <div class="save-section">
+        <label for="save-title">Título da gravação</label>
+        <input type="text" id="save-title" placeholder="Minha consulta">
+        <div class="checkbox-line">
+          <input type="checkbox" id="save-only-filtered">
+          <label for="save-only-filtered">Gravar só linhas filtradas e marcadas</label>
+        </div>
+        <button type="button" id="btn-save" class="btn btn-success">Gravar tabelas marcadas</button>
+        <button type="button" id="btn-fetch-details" class="btn btn-secondary" style="display:none">Buscar detalhes</button>
+      </div>
+
+      <div class="search-filters">
+        <input type="search" id="global-search" placeholder="Pesquisa global…">
+        <div id="col-filters"></div>
+      </div>
+
+      <p id="details-hint" class="details-hint hidden"></p>
+
+      <div class="preview-table-wrap">
+        <table id="preview-table">
+          <thead id="preview-thead"></thead>
+          <tbody id="preview-tbody"></tbody>
+        </table>
+      </div>
+    </div>
+  </section>
+
+  <!-- ===== ABA TABELAS GRAVADAS ===== -->
+  <section id="tab-gravadas" class="tab-panel hidden">
+    <div class="saved-header">
+      <h2>Tabelas gravadas</h2>
+      <button type="button" id="btn-new-consulta" class="btn btn-small">Nova gravação</button>
+    </div>
+    <div id="consultas-list"></div>
+
+    <div id="saved-detail" class="hidden-panel">
+      <div class="saved-detail-header">
+        <input type="text" id="saved-titulo" placeholder="Título">
+        <button type="button" id="btn-saved-titulo" class="btn btn-small">Guardar título</button>
+        <button type="button" id="btn-saved-excel" class="btn btn-small">Excel</button>
+        <button type="button" id="btn-saved-edit" class="btn btn-small">Editar tabela</button>
+        <button type="button" id="btn-saved-delete" class="btn btn-danger btn-small">Apagar</button>
+      </div>
+      <p id="saved-info" class="hint"></p>
+      <div class="saved-table-wrap">
+        <table id="saved-table">
+          <thead id="saved-thead"></thead>
+          <tbody id="saved-tbody"></tbody>
+        </table>
+      </div>
+      <div id="saved-edit-actions" class="hidden-panel">
+        <button type="button" id="btn-saved-add-row" class="btn btn-small">Adicionar linha</button>
+        <button type="button" id="btn-saved-save-edit" class="btn btn-primary btn-small">Guardar alterações</button>
+      </div>
+    </div>
+  </section>
+</main>
+
+<dialog id="dialog-new-consulta">
+  <form method="dialog">
+    <h3>Nova gravação</h3>
+    <label for="new-consulta-titulo">Título</label>
+    <input type="text" id="new-consulta-titulo" placeholder="Minha consulta">
+    <label for="new-consulta-colunas">Colunas (separadas por vírgula)</label>
+    <input type="text" id="new-consulta-colunas" placeholder="Col1, Col2, Col3">
+    <div class="btn-row">
+      <button type="submit" id="btn-new-consulta-ok" class="btn btn-primary">Criar</button>
+      <button type="button" id="btn-new-consulta-cancel" class="btn btn-secondary">Cancelar</button>
+    </div>
+  </form>
+</dialog>
+
+<script src="/assets/app.js?v=20260402o"></script>
+</body>
+</html>

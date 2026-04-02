@@ -1,0 +1,897 @@
+================================================================================
+PROMPT PARA RECRIAR O PROJETO "EXTRATOR DE TABELAS HTML" DO ZERO
+================================================================================
+
+Cria um projeto Python completo para extrair tabelas HTML de qualquer URL
+(focado no Portal da Transparência do Brasil mas funciona com qualquer site).
+O projeto tem: scraper (Playwright + BeautifulSoup), API (FastAPI), banco
+(SQLite), assistente IA para filtros (OpenAI opcional), e frontend
+(HTML/CSS/JS vanilla) — tudo dark mode, moderno, em pt-BR.
+
+================================================================================
+CHECKLIST — TODAS AS FUNCIONALIDADES (nada pode faltar face ao app de referência)
+================================================================================
+
+SCRAPER (scrape_lista.py)
+  [ ] Playwright sync + Chromium headless (opção headed para debug)
+  [ ] BeautifulSoup para parse do HTML final (separação: browser → HTML → BS4)
+  [ ] Espera por seletor CSS configurável (wait_selector)
+  [ ] Deteção AUTOMÁTICA do seletor de espera pela URL (frontend: __auto__ +
+      heurísticas Portal / .gov.br / W3Schools Tryit / Receita / default table)
+  [ ] Seletor personalizado "Outro…" (CSS à mão)
+  [ ] Deteção AUTOMÁTICA de iframe: iframe_auto + constante __auto__ no backend;
+      percorre page.frames (inclui iframes aninhados); ordem iframe-first em URLs
+      Tryit (w3schools + tryit no path/query)
+  [ ] Iframe MANUAL com seletor CSS; normalizar id sem # (ex.: iframeResult → #iframeResult)
+  [ ] Após iframe manual: varrer sub-árvore de frames até encontrar o wait_selector
+  [ ] Atalho W3Schools Tryit: #iframeResult + editor.save() + submitTryit(1) + document.write
+  [ ] Estabilização Portal #lista: networkidle + espera por linhas no tbody (AJAX)
+  [ ] Múltiplas tabelas de topo; ignorar tabelas HTML aninhadas
+  [ ] table_index + prefer_table_id (default "lista" em URLs do Portal federal)
+  [ ] Opção skip_first_column (coluna tipo "Detalhar")
+  [ ] Paginação estilo Portal: pagina=1,2,3… + paginacaoSimples + tamanhoPagina;
+      NUNCA injetar estes params em hosts que não sejam portaldatransparencia.gov.br
+  [ ] Paginação: não parar só porque len(linhas) < tamanho_pagina; parar com página vazia
+  [ ] Linhas com metadados _pagina e _linha ao juntar várias páginas
+  [ ] merge_query_params na URL; período mês/ano → de/ate em dd/mm/aaaa (Brasil):
+      primeiro dia do mês inicial e último dia do mês final (ex.: 2024-01 a 2024-03
+      → de=01/01/2024 ate=31/03/2024). NÃO inverter dia/mês.
+  [ ] Timeouts: NAV_TIMEOUT_MS = 120_000 (configurável via PLAYWRIGHT_NAV_TIMEOUT_MS
+      no .env, mínimo 30s, máximo 300s); context + page + navigation com esse valor;
+      chamar _apply_timeouts_page(page) NO INÍCIO de _goto_pagina_e_html ANTES do
+      page.goto (senão o Playwright usa 30s por defeito na navegação).
+  [ ] CLI: python scrape_lista.py <url> [--wait-selector] [--table-index] [--headed] …
+
+ANÁLISE PRÉVIA (probe — POST /api/probe)
+  [ ] Navega à URL com Playwright, extrai campos de formulário e lista de tabelas
+  [ ] Devolve query_params (dict da query string da url_final), form_fields só com
+      HTML name real; excluir token-input-* e check-group-N; NUNCA usar id como name
+  [ ] Devolve form_fields (name, type, label, options), tables, url_final, etc.
+  [ ] Modal no frontend: «Analisar URL» antes de «Carregar dados»
+  [ ] Parâmetros dinâmicos (extra_query): grelha chave→valor editável, preenchida
+      automaticamente pelos campos do probe ou pela IA; merge na URL ao carregar
+
+ASSISTENTE IA (ai_suggest.py + POST /api/ai/suggest-filters)
+  [ ] Input em linguagem natural ("quero RJ valor mínimo 100.000 de janeiro a março")
+  [ ] Com OPENAI_API_KEY (.env): GPT-4o-mini mapeia para params + período
+  [ ] Sem chave: heurísticas locais (UF, valor, período por meses em PT)
+  [ ] Reconhecimento de TODOS os estados brasileiros (nome completo ou sigla) → UF:
+      - Tabela _BR_UF_NAME_PAIRS com variantes (são/sao, paraná/parana, etc.)
+      - _uf_sigla_from_intent(intent): deteta estado no texto do pedido
+      - apply_brazil_uf_rules(params, intent, form_fields): preenche campo «uf»
+        (ou «estado») com a sigla; se «localidadeGasto» tiver apenas o nome do
+        estado, remove-o para não duplicar filtro (ex.: localidadeGasto="Rio de
+        Janeiro" + uf="RJ" → só uf="RJ")
+  [ ] Período em português: parse_periodo_meses_pt(intent) → (YYYY-MM, YYYY-MM):
+      - "janeiro a março" → (2026-01, 2026-03) usando ano atual
+      - "janeiro a março de 2024" → (2024-01, 2024-03)
+  [ ] Ano atual forçado quando o pedido NÃO contém 20xx explícito:
+      _apply_current_year_if_no_explicit_year_in_intent() substitui o ano no
+      YYYY-MM do modelo pelo ano civil (evita GPT devolver 2023 quando estamos
+      em 2026)
+  [ ] Sanitização de params: _sanitize_params_from_model() e _sanitize_extra_query()
+      ignoram valores None / "None" / "null" / "undefined" / "" — evita
+      ?valorEmpenhadoAte=None na URL
+  [ ] Prompt do GPT inclui data de hoje, ano corrente, instrução para usar sigla
+      UF no campo «uf» quando existir, e nunca devolver null como texto
+  [ ] Resposta: { ok, message, params, periodo_de_mes, periodo_ate_mes, note }
+  [ ] Frontend aplica params na grelha dinâmica E periodo_de_mes/periodo_ate_mes
+      nos inputs type=month (#periodo-de e #periodo-ate)
+
+API (app.py)
+  [ ] POST /api/scrape com body: url, wait_selector, iframe_auto, iframe_selector,
+      table_index, skip_first_column, paginacao_portal, tamanho_pagina, max_paginas,
+      periodo_de/ate, prefer_table_id, buscar_todas_paginas, extra_query (dict)
+  [ ] _sanitize_extra_query: remove chaves com valor None / "None" / "null"
+  [ ] _preparar_url_scrape: priorizar tamanhoPagina (ou tamanho_pagina) de extra_query
+      sobre o campo tamanho_pagina do body ao fundir paginação Portal; devolver
+      (url, tamanho_efetivo) para a resposta e paginação usarem o mesmo número
+  [ ] use_paginada: Portal + paginacao_portal + (buscar_todas_paginas OR max_paginas>1);
+      default max_paginas=1 no modelo para não paginar 20 páginas por defeito
+  [ ] use_paginada só se Portal federal; preparar URL sem poluir outros sites
+  [ ] Erros de extração → HTTP 502 com mensagem clara (não 422)
+  [ ] POST /api/probe — análise prévia (Playwright); devolve form_fields + tables
+  [ ] POST /api/ai/suggest-filters — chama ai_suggest.suggest_filters_ai
+  [ ] POST /api/salvar; GET/PATCH/PUT/DELETE consultas; GET …/excel (openpyxl)
+  [ ] GET / + StaticFiles /assets
+  [ ] load_dotenv(BASE_DIR / ".env") para OPENAI_API_KEY e PLAYWRIGHT_NAV_TIMEOUT_MS
+
+BASE (db_local.py)
+  [ ] SQLite em data/portal_lista.db; consultas + linhas (JSON por linha)
+  [ ] CRUD completo + export coerente com colunas gravadas
+
+FRONTEND (web/)
+  [ ] Abas Extrair | Tabelas gravadas
+  [ ] Formulário scrape com todos os campos + hints (Tryit, cache Ctrl+F5)
+  [ ] syncUrlDerivedOptions: Portal → paginação + skip coluna + #lista; não-portal
+      desliga paginação; Tryit → marca iframe auto
+      OBRIGATÓRIO também: chamar syncUrlDerivedOptions() no carregamento inicial da
+      página (bind) se a URL já vier preenchida, e no evento "change" da URL (não
+      só "blur"), senão período/linhas/páginas parecem "não fazer nada".
+  [ ] Correcção ao submeter: se Portal e preset "table" ou #table → forçar #lista
+  [ ] «Analisar URL» (probe): modal com resumo (tabelas, campos, iframe detetado)
+  [ ] Parâmetros dinâmicos (grelha chave→valor com "Adicionar/Remover"); merge em
+      extra_query ao chamar /api/scrape
+  [ ] Assistente IA no modal: textarea + botão «Sugerir parâmetros»:
+      - Chama POST /api/ai/suggest-filters com url, intent, form_fields
+      - Aplica params na grelha dinâmica via mergeDynamicParamKey
+      - Aplica periodo_de_mes / periodo_ate_mes nos inputs type=month
+      - Mostra nota/status (mensagem de sucesso ou fallback)
+  [ ] Resposta: várias tabelas → picker; checkboxes "gravar tabela X"
+  [ ] Colunas: mostrar/ocultar, reordenar drag-and-drop
+  [ ] Pré-visualização: pesquisa global, filtros por coluna, coluna Gravar por linha
+      + master checkbox, "marcar linhas visíveis", opção salvar só filtradas+marcadas
+  [ ] Gravar múltiplas tabelas; tabela ativa respeita colunas visíveis + linhas marcadas
+  [ ] Gravadas: lista clicável, detalhe, editar título, export Excel, editar tabela
+      inline, nova gravação vazia (dialog), eliminar
+  [ ] Datas na lista em fuso America/Sao_Paulo
+  [ ] Cache-bust: app.js?v=… e style.css?v=… (evitar 304 — usar Ctrl+F5 se não atualizar)
+
+SETUP
+  [ ] requirements.txt (com openai e python-dotenv)
+  [ ] setup.ps1 (pip + playwright install chromium)
+  [ ] .env.example (OPENAI_API_KEY + PLAYWRIGHT_NAV_TIMEOUT_MS opcional)
+
+================================================================================
+Estrutura de ficheiros (criar todos de uma vez):
+  requirements.txt
+  setup.ps1
+  .env.example
+  ai_suggest.py
+  scrape_lista.py
+  db_local.py
+  app.py
+  web/index.html
+  web/static/style.css
+  web/static/app.js
+
+Para iniciar depois de criar:
+  pip install -r requirements.txt
+  python -m playwright install chromium
+  cp .env.example .env   # depois editar .env e colar OPENAI_API_KEY (nunca no example)
+  python -m uvicorn app:app --host 127.0.0.1 --port 8765
+
+================================================================================
+FICHEIRO: requirements.txt
+================================================================================
+
+playwright>=1.40.0
+beautifulsoup4>=4.12.0
+fastapi>=0.115.0
+uvicorn[standard]>=0.32.0
+openpyxl>=3.1.0
+openai>=1.40.0
+python-dotenv>=1.0.0
+
+================================================================================
+FICHEIRO: .env.example
+================================================================================
+
+# Copie para .env. NUNCA commitar chaves reais no .env.example (use OPENAI_API_KEY= vazio).
+OPENAI_API_KEY=
+# Opcional: timeout Playwright em ms (30s–300s; predefinido 120000)
+# PLAYWRIGHT_NAV_TIMEOUT_MS=120000
+
+================================================================================
+FICHEIRO: setup.ps1  (script PowerShell de instalação)
+================================================================================
+
+Script que:
+- Atualiza o PATH da sessão (caso Python tenha sido recém-instalado)
+- Tenta py -3, depois python
+- Faz pip install -r requirements.txt
+- Faz python -m playwright install chromium
+- Se não encontrar Python, mostra instruções com winget e link python.org
+
+================================================================================
+FICHEIRO: ai_suggest.py — ASSISTENTE IA DE FILTROS
+================================================================================
+
+Objetivo: receber um pedido em linguagem natural em português e devolver
+parâmetros de query string + período (YYYY-MM) para preencher o formulário.
+Funciona com ou sem OPENAI_API_KEY.
+
+Constantes / tabelas:
+- MES_PT: dict nome→número (janeiro=1 … dezembro=12, com variante "marco"=3)
+- _VALID_UF: frozenset com as 27 siglas válidas (AC AL AP AM BA … TO)
+- _BR_UF_NAME_PAIRS: list de (nome_normalizado, sigla) — todos os 26 estados +
+  DF, com variantes sem acento (são paulo / sao paulo, paraná / parana, etc.).
+  ORDENAR por comprimento decrescente do nome (evitar que "Rio" case antes de
+  "Rio de Janeiro" ou "Rio Grande do Sul")
+
+Funções de período:
+- _month_pattern() → regex alternation de todos os nomes de mês (por comprimento)
+- parse_periodo_meses_pt(intent) → (YYYY-MM | None, YYYY-MM | None):
+  Procura nomes de meses no texto; se houver ano 20xx no texto usa-o, senão
+  ano atual. Se 2 meses: retorna (menor, maior). Se 1: retorna (mês, mês).
+- _valid_iso_mes(s) → str|None: valida formato "YYYY-MM"
+- _intent_has_explicit_year(text) → bool: re.search(r"\b20\d{2}\b")
+- _apply_current_year_if_no_explicit_year_in_intent(intent, pde, pat):
+  Se o utilizador NÃO escreveu um ano 20xx, substitui o ano nos YYYY-MM pelo
+  ano civil (datetime.date.today().year). OBRIGATÓRIO — senão o GPT inventa anos.
+
+Funções de UF / estado brasileiro:
+- _fold_for_uf(s) → str: minúsculas + remove acentos + normaliza espaços
+- _uf_sigla_from_intent(intent) → str|None:
+  1. Procura sigla isolada de 2 letras que pertença a _VALID_UF
+  2. Procura nome de estado (mais longo primeiro) via _BR_UF_NAME_PAIRS
+- _sigla_from_localidade_value(val) → str|None: se o valor for nome de estado
+- _form_field_keys_lower(form_fields) → dict lower(name) → name real
+- apply_brazil_uf_rules(params, intent, form_fields) → params corrigido:
+  1. Deteta sigla do pedido ou do valor de localidadeGasto
+  2. Preenche campo «uf» (ou «estado») com a sigla
+  3. Remove localidadeGasto se continha apenas o nome do estado (evita duplicação)
+
+Sanitização:
+- _sanitize_params_from_model(raw) → dict[str,str]: ignora None, "None", "null",
+  "undefined", "nan", dicts e listas — evita ?campo=None na URL
+
+Heurísticas locais:
+- _heuristic_suggest(intent, form_fields, url) → dict params (url necessário para regras Portal):
+  - UF: usa _uf_sigla_from_intent para qualquer estado brasileiro (não só SP)
+  - Valor numérico (>=4 dígitos): procura campo com "liquidado"+"de" ou
+    "empenhado"+"de" e preenche
+  - No final: apply_brazil_uf_rules para normalizar UF
+
+Função principal:
+- suggest_filters_ai(url, intent, form_fields) → dict (sempre passar url às heurísticas e apply_portal_funcao_rules):
+  1. Extrai período por heurística: pde_h, pat_h = parse_periodo_meses_pt(intent)
+  2. Prepara compact (amostra de campos para o prompt)
+  3. Se OPENAI_API_KEY:
+     a. Prompt com: URL, pedido, data de hoje + ano atual, campos, formato JSON
+        esperado, regras (usar sigla UF no campo «uf», nunca null como texto,
+        ano corrente se não explícito)
+     b. System message menciona ano corrente e regra de UF
+     c. Modelo: gpt-4o-mini, temperature=0.15, response_format=json_object
+     d. Pós-processamento:
+        - _sanitize_params_from_model
+        - apply_brazil_uf_rules (corrige UF mesmo que o GPT erre)
+        - Período: _valid_iso_mes + fallback para heurística
+        - _apply_current_year_if_no_explicit_year_in_intent
+     e. Erro do OpenAI → fallback heurístico
+     f. ImportError (openai não instalado) → fallback + mensagem "pip install openai"
+  4. Sem chave: heurísticas locais + período por meses
+  5. Retorna SEMPRE: { ok, message, params, periodo_de_mes, periodo_ate_mes, note }
+
+================================================================================
+FICHEIRO: scrape_lista.py — SCRAPER (Playwright + BeautifulSoup)
+================================================================================
+
+Constantes:
+- IFRAME_SELECTOR_AUTO = "__auto__"
+- NAV_TIMEOUT_MS: configurável via env var PLAYWRIGHT_NAV_TIMEOUT_MS (default
+  120_000, mín 30_000, máx 300_000). Usar em goto e alinhar com defaults do
+  context/page. Calcular uma vez no import via _nav_timeout_ms().
+- CHROME_USER_AGENT — string de User-Agent real do Chrome (Windows)
+
+Funções utilitárias:
+- merge_query_params(url, updates) — atualiza query string; valor None remove o param
+- mes_para_de_ate(periodo_de, periodo_ate) — inputs "YYYY-MM" (type month) → query
+  de/ate em formato BR dd/mm/aaaa: primeiro dia do mês "de" e último dia do mês "até"
+  (ex.: 2024-01..2024-01 → 01/01/2024 e 31/01/2024). ERRO COMUM: gerar MM/DD/aaaa
+  ou trocar dia com mês — invalida o filtro no Portal.
+
+Extração BeautifulSoup (parsing puro, sem browser):
+- _row_cells(tr) — texto de cada th/td filho direto
+- _unique_headers(labels) — garante nomes únicos (adiciona " #2" etc)
+- _is_nested_table(table) — True se table está dentro de outra table
+- extrair_uma_tabela_generica(table, skip_first_column) — de um Tag <table>,
+  extrai (headers, rows). Suporta com e sem <thead>. Se skip_first_column=True,
+  remove a 1.ª coluna (ex.: coluna "Detalhar" do Portal)
+- extrair_todas_tabelas_top_level(html, skip_first_column) — todas as <table>
+  de nível superior (ignora aninhadas), devolve lista de dicts com:
+  index, element_id, class, headers, rows, row_count
+
+REGRAS CRÍTICAS do parsing:
+1. Tabelas aninhadas (table dentro de table) devem ser IGNORADAS
+2. Se não há <thead>, o 1.º <tr> vira cabeçalho
+3. Usar zip_longest(headers, vals, fillvalue="") para linhas com colunas a mais/menos
+4. Cabeçalhos vazios viram "coluna"
+5. Cabeçalhos duplicados recebem sufixo " #2", " #3" etc
+
+Navegação Playwright:
+- _apply_timeouts_page(page) — page.set_default_timeout(NAV_TIMEOUT_MS) e
+  set_default_navigation_timeout(NAV_TIMEOUT_MS); chamar antes de qualquer goto
+- _root_page_or_iframe(page, iframe_selector, log) — modo manual: espera o
+  seletor CSS, pega element_handle → content_frame()
+
+DETEÇÃO AUTOMÁTICA DE IFRAME (muito importante — sem isto W3Schools e outros falham):
+- _enumerate_frames_in_subtree(page, subtree_root) — usa page.frames (Playwright
+  expõe TODOS os frames incluindo aninhados) e filtra pela sub-árvore
+- _try_frames_for_selector(frames, ws, timeout_ms, log) — tenta wait_for_selector
+  em cada frame; devolve o primeiro que tiver o seletor. Captura tanto
+  PlaywrightTimeoutError como Exception genérica (cross-origin etc)
+- _root_page_auto_iframe(page, ws, log, prefer_iframes_first) — com page.frames:
+  separa main (frames[0]) dos outros; se prefer_iframes_first, testa outros
+  primeiro e main depois; timeout dinâmico = max(10_000, min(25_000, 180_000 // n))
+
+ATALHO W3SCHOOLS TRYIT (sem isto o Tryit nunca funciona!):
+- _try_w3schools_tryit_iframe_result(page, ws, log):
+  1. Espera #iframeResult (60s)
+  2. Executa via page.evaluate: window.editor.save() + submitTryit(1)
+     (o Tryit usa CodeMirror + document.write, o iframe fica vazio sem isto)
+  3. Pega content_frame() do #iframeResult
+  4. Espera ws dentro do frame (90s)
+  5. Devolve (frame, True) ou (None, False)
+
+- _resolve_scrape_root(page, iframe_selector, ws, log, prefer_iframes_first):
+  Devolve (root_document, já_encontrou_ws). Se "__auto__" → auto-iframe.
+  Se string CSS → modo manual. Se vazio → page.
+
+- _goto_pagina_e_html(page, url, wait_selector, ..., iframe_selector):
+  0. _apply_timeouts_page(page) PRIMEIRO (evita timeout 30000ms default no goto)
+  1. wait_until no primeiro goto:
+     - W3Schools Tryit → "load" (iframe/editor)
+     - Portal da Transparência (host) ou wait_selector #lista → "domcontentloaded"
+       (NÃO usar "load" no Portal: muitos recursos/analytics impedem o evento "load"
+       ou demoram demais → Page.goto timeout mesmo com 90s em alguns ambientes)
+     - resto → "domcontentloaded"
+  2. page.goto(url, wait_until=..., timeout=NAV_TIMEOUT_MS)
+  3. Se URL é W3Schools Tryit → tenta atalho _try_w3schools_tryit_iframe_result
+  4. Se não encontrou → _resolve_scrape_root (auto ou manual)
+  5. Se ainda não achou ws → _enumerate_frames_in_subtree + _try_frames_for_selector
+  6. Se AINDA não → root.wait_for_selector(ws, 90s) com mensagem de erro descritiva
+  7. Se #lista → estabilização extra: networkidle + esperar linhas no tbody
+  8. Senão → espera rápida por <table> (15s) + networkidle opcional
+  9. Devolve root.content()
+
+Funções principais de extração:
+- buscar_tabelas_url(url, wait_selector, table_index, prefer_table_id,
+    skip_first_column, headed, wait_network_idle, log, iframe_selector):
+  Abre browser headless, vai à URL, extrai HTML, fecha browser,
+  parse com BS4. Devolve (todas_tabelas, headers_escolhida, rows_escolhida).
+  IMPORTANTE: set_default_timeout(NAV_TIMEOUT_MS) no context E na page.
+  set_default_navigation_timeout(NAV_TIMEOUT_MS) também.
+
+- buscar_tabelas_url_paginada(url_base, wait_selector, table_index, ...,
+    tamanho_pagina, max_paginas, iframe_selector):
+  Loop de paginação. Para o Portal usa pagina=1,2,3... Para outros usa offset.
+  NÃO parar só porque len(linhas) < tamanho_pagina — a próxima página vazia
+  é que encerra (o HTML às vezes perde 1 linha e isso parava antes da pág 2).
+  Cada linha recebe _pagina e _linha (contador global).
+  Só adiciona paginacaoSimples/tamanhoPagina se for Portal.
+
+- probe_pagina(url, wait_selector, iframe_selector, log):
+  Navega e extrai: form_fields (name, type, label, options), tables (resumo),
+  url_final, table_count. Usado pelo endpoint POST /api/probe.
+
+REGRAS CRÍTICAS do Playwright:
+1. NAV_TIMEOUT_MS=120000 (configurável); usar no page.goto e nos set_default_*
+2. SEMPRE set_default_timeout / set_default_navigation_timeout no context E page
+3. SEMPRE _apply_timeouts_page(page) no início de _goto_pagina_e_html antes do goto
+4. User-Agent real do Chrome (sem isto sites bloqueiam)
+5. --disable-blink-features=AutomationControlled no launch
+6. locale="pt-BR" no contexto
+7. viewport 1365x900
+8. Accept-Language: pt-BR
+9. Capturar PlaywrightTimeoutError como falha normal (ValueError), não crash
+
+================================================================================
+FICHEIRO: db_local.py — SQLite
+================================================================================
+
+Tabelas:
+- consultas: id, criado_em (ISO UTC), titulo, url_final, periodo_de, periodo_ate,
+  tamanho_pagina, paginas_buscadas, total_linhas, colunas_json, opcoes_json
+- linhas: id, consulta_id (FK CASCADE), ordem, dados_json
+
+Funções:
+- default_db_path(base_dir) → data/portal_lista.db (cria pasta data/)
+- init_db(conn) — cria tabelas + índice, PRAGMA foreign_keys = ON
+- agora_iso() — datetime.now(timezone.utc).isoformat()
+- inserir_consulta(...) → int (id)
+- listar_consultas(conn, limite) → lista de dicts
+- obter_consulta_com_linhas(conn, id) → dict com rows
+- eliminar_consulta(conn, id) → bool
+- atualizar_titulo_consulta(conn, id, titulo) → bool
+- substituir_dados_consulta(conn, id, titulo, colunas, linhas) → bool
+
+================================================================================
+FICHEIRO: app.py — FastAPI API + servir estáticos
+================================================================================
+
+Modelos Pydantic:
+- ProbeBody: url, wait_selector, iframe_auto(bool), iframe_selector(str|null),
+  skip_first_column, periodo_de/ate
+- ScrapeBody: url, periodo_de/ate, tamanho_pagina(1-500), buscar_todas_paginas,
+  max_paginas(1-500), paginacao_portal, wait_selector, iframe_auto(bool),
+  iframe_selector(str|null), table_index, skip_first_column, prefer_table_id,
+  extra_query(dict[str,str]) — parâmetros dinâmicos adicionais
+- AiSuggestBody: url, intent(str), form_fields(list)
+- SalvarBody, ConsultaTituloPatch, ConsultaPutBody, ConsultaPostBody
+
+Helpers:
+- _is_portal_transparencia_url(url) — "portaldatransparencia.gov.br" in url.lower()
+- _normalize_iframe_selector(raw):
+  - None/vazio → None
+  - "__auto__" → "__auto__"
+  - Começa com #, ., [ → mantém
+  - Começa com "iframe" → mantém (ex: iframe[name=x])
+  - Parece id CSS (alphanum) → prefixar # (ex: iframeResult → #iframeResult)
+  - Senão mantém como está
+- _sanitize_extra_query(extra): remove chaves com valor None / "None" / "null" /
+  "undefined" / "nan" / vazio — evita ?campo=None na URL
+- _preparar_url_scrape(body):
+  - Valida URL não vazia
+  - Valida período (ambos ou nenhum, de <= ate)
+  - Converte período para de/ate na query
+  - extra_query: _sanitize_extra_query e merge_query_params
+  - Paginação (paginacaoSimples etc) SÓ se for Portal (não adicionar noutros hosts!)
+- _preparar_url_probe(body): como acima mas sem extra_query
+- _prefer_id(body) — se Portal, prefer "lista"
+- _resolved_table_index — procura por element_id
+- _headers_com_meta — adiciona _pagina/_linha ao final dos headers
+- _tables_response_payload — monta resposta com rows só na tabela selecionada
+- load_dotenv(BASE_DIR / ".env") no arranque
+
+Endpoints:
+
+POST /api/probe
+  - Análise prévia: navega, extrai form_fields + tables
+  - Devolve: form_fields, tables, table_count, url_final, periodo_de/ate
+
+POST /api/ai/suggest-filters
+  - Body: url, intent, form_fields
+  - Chama ai_suggest.suggest_filters_ai
+  - Devolve: ok, message, params, periodo_de_mes, periodo_ate_mes, note
+
+POST /api/scrape
+  - Se iframe_auto=True → iframe_sel = "__auto__"
+  - Se iframe_selector="__auto__" → também equivale
+  - extra_query: sanitizada e merge na URL
+  - Paginação do Portal (paginacaoSimples etc) SÓ ativa quando URL é do Portal
+  - Erros de extração → 502 (não 422, fica mais claro no browser)
+  - Erros genéricos → 502 com mensagem
+  - Resposta: tables[], selected_table_index, headers, rows, count,
+    url_final, paginas_buscadas, tamanho_pagina, periodo_de/ate
+
+POST /api/salvar — gravar consulta (múltiplas tabelas possíveis)
+GET /api/consultas — listar (limite=50)
+GET /api/consultas/{id} — detalhe com rows
+POST /api/consultas — criar consulta manual (sem scraping)
+PATCH /api/consultas/{id} — atualizar título
+PUT /api/consultas/{id} — substituir dados inteiros (edição de tabela)
+DELETE /api/consultas/{id} — eliminar
+GET /api/consultas/{id}/excel — export xlsx com openpyxl
+
+GET / — serve web/index.html
+/assets/* — serve web/static/
+
+================================================================================
+FICHEIRO: web/index.html — Frontend HTML
+================================================================================
+
+Duas abas: "Extrair" e "Tabelas gravadas"
+
+Aba Extrair — formulário com:
+- URL (input type=url)
+- "O que esperar" (select): Automático, table, #lista, main, body, #conteudo,
+  .table-responsive, Outro (custom CSS)
+- Hint de deteção automática (mostra qual seletor será usado)
+- Índice da tabela (0 = primeira)
+- Checkbox "Ignorar 1.ª coluna"
+- Checkbox "Detetar iframe automaticamente" (id=iframe-auto)
+- Input "iframe — seletor manual" (id=iframe-selector, fica disabled quando auto)
+- Checkbox "Paginação na URL (Portal)"
+- Período de/até (month inputs, id=periodo-de / periodo-ate)
+- Linhas por página, Máx. páginas
+- Botão «Analisar URL» (probe) + Botão «Carregar dados»
+
+Modal de análise prévia (probe):
+- Resumo: tabelas encontradas, campos detetados, iframe
+- Parâmetros na URL (flexível): grelha chave→valor editável com botões
+  «Adicionar parâmetro» / «Remover». Preenchida automaticamente pelo probe
+  (form_fields do site) ou pela IA. Ao «Carregar dados» estes parâmetros são
+  enviados em extra_query e fundidos na URL final.
+- Assistente (linguagem natural): textarea + botão «Sugerir parâmetros»
+  → chama /api/ai/suggest-filters; resultado preenche a grelha + período
+
+Após carregar:
+- Picker de tabela (se >1)
+- Checkboxes para gravar cada tabela
+- Lista de colunas (drag-and-drop para reordenar, checkbox para visibilidade)
+- Título da gravação + botão "Gravar tabelas marcadas"
+- Pesquisa global + filtros por coluna
+- Tabela de pré-visualização com coluna "Gravar" (checkbox por linha)
+
+Aba Tabelas gravadas:
+- Lista de consultas (clicável)
+- Botão "Nova gravação" (dialog com título + colunas separadas por vírgula)
+- Detalhe: título editável, export Excel, editar tabela (inputs inline),
+  adicionar linha, eliminar gravação
+
+IMPORTANTE: cache-bust em /assets/app.js?v=… e /assets/style.css?v=… (atualizar
+  versão quando mudar JS/CSS; usar Ctrl+F5 se parecer código antigo)
+
+================================================================================
+FICHEIRO: web/static/style.css — Dark mode moderno
+================================================================================
+
+Variáveis CSS:
+  --bg: #0f1419; --surface: #1a2332; --surface2: #243044;
+  --border: #2d3a4f; --text: #e7ecf3; --muted: #8b9cb3;
+  --accent: #3d8bfd; --accent-dim: #2563c4;
+  --success: #34d399; --danger: #f87171; --radius: 10px;
+
+Regras chave:
+- Layout sem max-width rígido (usa clamp para padding)
+- Tabelas de dados (pré-visualização e gravadas): contentor com overflow-x: auto;
+  tabela com width: max-content; min-width: 100%; table-layout: auto; th/td com
+  white-space: nowrap para linhas baixas (aspecto de lista/planilha). NÃO usar
+  table-layout: fixed + word-break agressivo em muitas colunas — fica tudo "na
+  vertical" (células altas). Scroll horizontal é aceitável e esperado.
+- .saved-table-wrap: mesmo padrão de scroll horizontal para edição
+- .hidden-panel { display: none } .hidden-panel.visible { display: block }
+- Tabelas de consultas clickable com hover highlight
+- Dialog estilizado (dialog.app-dialog)
+- Filtros em grid responsivo (auto-fill, minmax)
+- Campo iframe ocupa linha inteira (grid-column: 1 / -1)
+- Modal de probe: .probe-modal com overlay, .form-grid para grelha de parâmetros,
+  secção IA com textarea e botão
+
+================================================================================
+FICHEIRO: web/static/app.js — JavaScript frontend (~1250+ linhas)
+================================================================================
+
+Estado:
+- DEFAULT_URL = URL do Portal da Transparência
+- PORTAL_HOST = "portaldatransparencia.gov.br"
+- el = {} com todos os getElementById
+- state = { originalOrder, order, visible, rows, allTables,
+    selectedTableIndex, colFilters, rowSaveSelected: Set,
+    dynamicParams: [], lastProbe: null }
+- scrapeMeta = {} (url_final, periodo, tamanho, paginas)
+- savedConsultaId, savedConsultaData (para aba gravadas)
+
+Funções chave:
+
+Heurística de URL:
+- isPortalUrl(url)
+- detectWaitSelectorFromUrl(url) — retorna { selector, label }:
+  Portal → #lista
+  W3Schools Tryit → table (com hint sobre iframe)
+  .gov.br → #conteudo
+  receita.fazenda / rfb → main
+  Default → table
+
+- getWaitSelectorValue() — resolve __auto__, __custom__ ou valor fixo
+- syncWaitCustomVisibility() — mostra/esconde input custom
+- syncIframeAutoUi() — disable do input manual quando auto checked
+- updateWaitDetectedHint() — mostra hint no UI
+- syncUrlDerivedOptions() — ao blur E ao change da URL, e também no fim do bind()
+  se o campo URL já tiver valor (DEFAULT_URL):
+  Portal → marca paginação + skip 1.ª col + seletor #lista
+  Não-portal → DESMarca paginação
+  W3Schools Tryit → marca iframe auto
+
+Datas:
+- formatDateTimeBrPlain(iso) — Intl.DateTimeFormat pt-BR, timezone Sao_Paulo
+
+Parâmetros dinâmicos (extra_query):
+- state.dynamicParams: array de {key, value}
+- renderDynamicParams() — renderiza grelha chave→valor com inputs e botão Remover
+- collectExtraQuery() → objeto {k:v} filtrado (sem vazios)
+- mergeDynamicParamKey(key, value) — insere ou atualiza par na lista
+- applyProbeToDynamicParams(data) — preenche com form_fields do probe
+
+Análise prévia (probe):
+- onProbeClick() — POST /api/probe, abre modal com resumo
+- renderProbeSummary(data) — preenche modal com tabelas, campos, IA
+- closeProbeModal() / applyProbeAndClose()
+
+Assistente IA:
+- onProbeAiSuggest():
+  1. Lê intent do textarea (#probe-ai-intent)
+  2. POST /api/ai/suggest-filters com {url, intent, form_fields}
+  3. data.params → mergeDynamicParamKey para cada par
+  4. data.periodo_de_mes → el["periodo-de"].value (input type=month)
+  5. data.periodo_ate_mes → el["periodo-ate"].value
+  6. Mostra nota/status no modal
+
+Tabelas e colunas:
+- initFromResponse(data) — popula state, renderiza tudo
+- applyTableByIndex(idx) — muda tabela ativa
+- renderColumns() — drag-and-drop com dataTransfer
+- renderTable() — grelha com coluna "Gravar" (checkbox por linha + master)
+- renderColumnFilterInputs() — input search por coluna
+- rowPassesFilters(row) — pesquisa global + coluna
+
+Gravação:
+- Botão "Gravar tabelas marcadas" — loop pelas tabelas checked, POST /api/salvar
+  para cada uma. Tabela ativa usa colunas visíveis + linhas marcadas;
+  outras tabelas gravam todas as colunas/linhas.
+
+Aba Gravadas:
+- loadConsultas() — GET /api/consultas
+- loadConsultaDetalhe(id) — GET /api/consultas/{id}
+- renderSavedDetail(d) — readonly
+- renderSavedTableEditable() — inputs inline + botão remover linha
+- savedAppendEmptyRow() — adiciona linha vazia
+- gatherSavedRowsFromEditDom() — lê inputs do DOM
+- savedGuardarTabelaEditada() — PUT /api/consultas/{id}
+- savedGuardarTitulo() — PATCH
+- savedExportarExcel() — GET .../excel → blob download
+- excluirConsultaPorId(id) — DELETE com confirm()
+- Nova gravação: dialog com showModal(), POST /api/consultas
+
+Submit do form (POST /api/scrape):
+- Monta payload com iframe_auto (bool), iframe_selector (null se auto),
+  extra_query (de collectExtraQuery)
+- Se Portal + seletor errado (table, .table) → corrige para #lista
+- Mostra "A carregar…" ou "A carregar várias páginas…"
+- Resposta → initFromResponse(data)
+
+Tabs:
+- click em .tab-btn → toggle hidden, carrega consultas ao entrar em gravadas
+
+================================================================================
+ARMADILHAS / BUGS QUE FORAM RESOLVIDOS (NÃO REPETIR!)
+================================================================================
+
+1. TIMEOUT DEFAULT DO PLAYWRIGHT
+   O Playwright tem timeout de 30s por defeito. OBRIGATÓRIO:
+   - NAV_TIMEOUT_MS = 120_000 (configurável via env) e usar no
+     page.goto(..., timeout=NAV_TIMEOUT_MS)
+   - context.set_default_timeout(NAV_TIMEOUT_MS) e
+     context.set_default_navigation_timeout(NAV_TIMEOUT_MS)
+   - page.set_default_timeout(NAV_TIMEOUT_MS) e
+     page.set_default_navigation_timeout(NAV_TIMEOUT_MS)
+   - Função _apply_timeouts_page(page) chamada NO INÍCIO de _goto_pagina_e_html
+     ANTES do primeiro page.goto (senão o erro mostra "30000ms exceeded").
+   - Portal: primeiro goto com wait_until="domcontentloaded", não "load" (ver
+     armadilha 11).
+
+2. PAGINAÇÃO DO PORTAL NOUTROS SITES
+   Os params paginacaoSimples/tamanhoPagina/offset/pagina SÓ devem ser
+   adicionados à URL quando o host é portaldatransparencia.gov.br.
+   Noutros sites corrompem o pedido → 404 ou HTML errado.
+
+3. IFRAME SEM # (ex: iframeResult)
+   O utilizador pode escrever "iframeResult" em vez de "#iframeResult".
+   _normalize_iframe_selector deve prefixar # quando parece um id CSS.
+
+4. W3SCHOOLS TRYIT — document.write
+   O preview do Tryit não carrega por URL. O JS da página cria um iframe
+   vazio (#iframeResult) e usa submitTryit() + document.write() para meter
+   o HTML do editor dentro. Sem executar submitTryit via page.evaluate,
+   o iframe fica vazio e o seletor "table" nunca aparece → timeout.
+   OBRIGATÓRIO: editor.save() + submitTryit(1) antes de procurar.
+
+5. IFRAMES ANINHADOS
+   Usar page.frames (lista achatada de TODOS os frames, incluindo aninhados)
+   em vez de page.locator("iframe") que só vê nível 1.
+
+6. PARAR PAGINAÇÃO SÓ POR len < tamanho
+   NÃO parar a paginação só porque uma página devolveu menos linhas que
+   tamanho_pagina. O HTML às vezes perde 1 linha de layout. A próxima
+   página VAZIA é que encerra o ciclo.
+
+7. PORTAL #lista — ESTABILIZAÇÃO AJAX
+   Após navegar para nova página no Portal, o #lista esvazia e reenche
+   via AJAX. Sem esperar (networkidle + linhas no tbody), page.content()
+   captura HTML sem dados → paginação para na 2.ª página.
+
+8. CACHE DO app.js (304)
+   Incluir ?v=XXXXXXXX no <script src> para forçar atualização após mudanças.
+
+9. ERRO 502 vs 422
+   Usar 502 para falhas de extração (timeout, sem tabela, iframe bloqueado).
+   422 no browser parece "erro de formulário" e confunde o utilizador.
+
+10. PORTAL USA pagina=1,2,3 (NÃO offset)
+    No portaldatransparencia.gov.br, o parâmetro que avança resultados é
+    "pagina" e não "offset". Offset deve ser removido (None).
+
+11. PRIMEIRO GOTO NO PORTAL — NÃO USAR wait_until="load"
+    Sites públicos (Portal) carregam muitos recursos; o evento "load" pode não
+    disparar a tempo ou segurar o goto. Usar "domcontentloaded" no primeiro
+    page.goto e depois esperar #lista + estabilização (networkidle + linhas no tbody).
+    Manter wait_until="load" apenas para W3Schools Tryit se necessário.
+
+12. FILTRO DE PERÍODO (de/ate) — FORMATO BR dd/mm/aaaa
+    mes_para_de_ate deve gerar strings "01/MM/AAAA" e "último_dia/MM/AAAA".
+    Se inverter dia/mês ou usar formato errado, o Portal ignora o filtro e parece
+    que os inputs "não fazem nada".
+
+13. FRONTEND — syncUrlDerivedOptions SÓ NO blur
+    Se a URL default já vier preenchida, sem chamar syncUrlDerivedOptions() no
+    bind() e no "change" da URL, checkboxes (paginação, skip coluna) e preset #lista
+    podem ficar desalinhados com o que o utilizador espera ao clicar "Carregar".
+
+14. CSS DA PRÉ-VISUALIZAÇÃO — "TUDO NA VERTICAL"
+    Evitar table-layout:fixed + quebra de palavra em grelhas com muitas colunas:
+    as linhas ficam altas e não parecem lista. Preferir scroll horizontal +
+    white-space: nowrap nas células (estilo planilha).
+
+15. UnboundLocalError em buscar_tabelas_url (table_index)
+    Dentro de uma função interna (ex.: run()), NÃO fazer "table_index = i" se
+    "table_index" for também o nome do parâmetro da função externa: em Python
+    isso torna table_index local a run() inteira; se o bloco if prefer_table_id
+    não atribuir, table_index fica indefinido e explode ao comparar índices.
+    Usar variável local distinta (ti = table_index) e só depois ajustar ti.
+
+16. W3Schools Tryit — primeira tabela com 0 linhas de dados
+    Em exemplos HTML, a 1.ª <table> pode ser só uma linha (tratada como cabeçalho),
+    logo row_count=0. O utilizador vê "OK — 0 linhas". Solução: após escolher ti,
+    se row_count==0 e existir outra tabela com linhas, avançar para a primeira com
+    dados; devolver também o índice efetivo (ex.: tuplo com ti) para a API marcar
+    selected_table_index correto. No frontend, explicar que período/paginação não
+    aplicam ao Tryit.
+
+17. GPT INVENTA ANO (ex. 2023 QUANDO ESTAMOS EM 2026)
+    Quando o utilizador diz "janeiro a março" sem especificar ano, o GPT pode
+    devolver 2023-01. OBRIGATÓRIO: _apply_current_year_if_no_explicit_year_in_intent()
+    substitui o ano pelo ano civil se o pedido não contiver um 20xx explícito.
+
+18. PARAMS COM VALOR None / "None" NA URL
+    O GPT pode devolver {"valorEmpenhadoAte": null}. str(None) → "None" na URL,
+    que o Portal não reconhece. OBRIGATÓRIO: _sanitize_params_from_model() e
+    _sanitize_extra_query() filtram estes valores antes de merge na URL.
+
+19. LOCALIDADE vs UF — DUPLICAÇÃO DE FILTRO
+    Se o utilizador pede "Rio de Janeiro", o GPT pode pôr
+    localidadeGasto="Rio de Janeiro" em vez de uf="RJ". A API aceita ambos mas o
+    portal filtra melhor por UF. OBRIGATÓRIO: apply_brazil_uf_rules() detecta o
+    estado e preenche «uf» com sigla, removendo localidadeGasto se for redundante.
+
+20. PERÍODO NO FRONTEND — INPUTS type=month NÃO PREENCHIDOS PELA IA
+    O endpoint /api/ai/suggest-filters devolve periodo_de_mes e periodo_ate_mes
+    (YYYY-MM). O JavaScript DEVE copiar estes valores para el["periodo-de"].value
+    e el["periodo-ate"].value, senão o período não vai no body do /api/scrape e
+    o utilizador acha que "não funciona".
+
+21. .env.example SEM CHAVES REAIS + .gitignore
+    NUNCA incluir API keys reais no .env.example (risco de vazamento). Usar
+    OPENAI_API_KEY= vazio e comentário a apontar platform.openai.com. Criar
+    .gitignore com .env, __pycache__, venv.
+
+22. PROBE — PARÂMETROS DINÂMICOS (modal)
+    Não usar atributo HTML "id" como nome de parâmetro quando "name" está vazio
+    (gera lixo tipo token-input-orgaos, check-group-1). O probe DEVE:
+    - Devolver "query_params" = dict parseado da query string da url_final.
+    - Só incluir em form_fields inputs/selects com atributo "name" não vazio.
+    - Excluir names que comecem por "token-input-" e names "check-group-N".
+    O frontend preenche primeiro query_params (valores reais), depois acrescenta
+    campos de formulário ainda não listados com valor "".
+    Opcional UX: coluna "Parâmetro" readonly para linhas vindas do probe; só
+    "Adicionar parâmetro" permite editar o nome da chave.
+
+23. TAMANHOPAGINA: extra_query vs CAMPO DO FORMULÁRIO
+    Ao fundir paginação do Portal, se extra_query tiver tamanhoPagina (ou
+    tamanho_pagina), esse valor TEM PRIORIDADE sobre o número "Linhas por página"
+    do body JSON — senão o utilizador põe 10 na grelha e o backend sobrescreve com 50.
+    _preparar_url_scrape pode devolver (url_preparada, tamanho_efetivo). A resposta
+    /api/scrape devolve tamanho_pagina = valor efetivo. O frontend sincroniza o
+    input "Linhas por página" após probe (query), após IA e após scrape.
+
+24. MÚLTIPLAS PÁGINAS SEM SÓ O CHECKBOX "BUSCAR TODAS"
+    use_paginada NÃO pode ser apenas buscar_todas_paginas AND portal — o utilizador
+    espera que "Máx. páginas" = 3 com 10 linhas/página traga até 30 linhas mesmo
+    sem marcar "Buscar todas". Regra: Portal + paginacao_portal + (buscar_todas
+    OR max_paginas > 1). Default de max_paginas no modelo/UI = 1 para não ir buscar
+    20 páginas por engano quando o default antigo era 20.
+
+25. IFRAME MANUAL — SUB-ÁRVORE DE FRAMES
+    Após content_frame() do iframe manual, percorrer BFS child_frames a partir
+    desse frame até encontrar wait_selector; não assumir que page.frames mal filtrado
+    resolve.
+
+26. buscar_tabelas_url — ÍNDICE EFETIVO
+    Devolver (todas_tabelas, headers, rows, selected_table_index) para o frontend
+    e API ficarem alinhados com fallback quando row_count==0.
+
+27. FRONTEND — el[] COMPLETO NO bind()
+    Garantir que todos os elementos referenciados (btn-scrape, btn-probe,
+    save-title, save-only-filtered, etc.) são atribuídos a el no bind() — senão
+    ReferenceError ao submeter.
+
+28. FastAPI detail em ERROS
+    O campo "detail" pode ser string ou lista de objetos; o fetch no JS deve
+    normalizar (apiErr) para mensagem legível.
+
+29. IA / OPENAI — CHAVE E MENSAGENS
+    Reler .env em cada pedido a suggest_filters (load_dotenv(..., override=True))
+    ou documentar reinício do Uvicorn após mudar .env. Tratar 401 com mensagem
+    curta em PT (não despejar o JSON inteiro no utilizador). Heurística + GPT:
+    Portal despesas — "área da saúde" / "saude" → funcaoSubfuncao=FN10 (e regras
+    semelhantes para outras funções); instruir o GPT explicitamente no prompt.
+
+30. MODAL CSS — NÃO MISTURAR form-grid COM CADA LINHA DE PARÂMETRO
+    Cada linha (Parâmetro | Valor | Remover) deve ser um bloco próprio (cartão ou
+    grid local); não pôr form-grid no contentor pai de muitas linhas — vira grelha
+    de 4 colunas ilegível.
+
+================================================================================
+MELHORIAS AO PROMPT (CHECKLIST EXTRA PARA GERAÇÃO «DE UMA VEZ»)
+================================================================================
+- Exigir no texto do prompt: probe devolve query_params + form_fields filtrados
+  (name obrigatório; excluir token-input-*, check-group-*).
+- Exigir: _preparar_url_scrape retorna (url, tamanho_efetivo) com prioridade
+  tamanhoPagina em extra_query.
+- Exigir: condição de paginação multi-página explícita (item 24).
+- Exigir: .env.example sem segredos; .gitignore com .env.
+- Exigir: suggest_filters_ai(url, intent, form_fields) — o url é necessário para
+  regras do Portal (funcaoSubfuncao, etc.); heuristic_suggest recebe url.
+- Incluir na checklist de validação manual: (7) «Sugerir parâmetros» com
+  «só saúde SP» preenche funcaoSubfuncao e uf; (8) Máx. páginas 3 + 10 linhas
+  devolve mais de 10 linhas se houver dados.
+- Remover do exemplo .env.example qualquer chave sk-... (nunca colar chave real
+  no repositório).
+
+================================================================================
+[PREENCHER] — SITE / PORTAL ESPECÍFICO
+================================================================================
+(Preenche se quiseres customizar heurísticas e URL default. Senão ignora.)
+
+Nome ou tipo do portal / organismo:
+  _____________________________________________________________________________
+
+URL(s) de teste (uma por linha):
+  _____________________________________________________________________________
+  _____________________________________________________________________________
+  _____________________________________________________________________________
+
+Seletor(es) que a página usa para a grelha principal (se souberes; senão "a descobrir"):
+  _____________________________________________________________________________
+
+Paginação neste site (marca o que aplicar):
+  [ ] Query string (quais parâmetros?): _______________________________________
+  [ ] Botão "seguinte" / cliques (descrever): __________________________________
+  [ ] Infinite scroll: _________________________________________________________
+  [ ] Não tem / página única: _________________________________________________
+
+Autenticação, cookies, CAPTCHA, bloqueio a bot:
+  _____________________________________________________________________________
+
+Iframes, SPA ou conteúdo carregado por JS (notas):
+  _____________________________________________________________________________
+
+================================================================================
+[PREENCHER] — TECNOLOGIAS E REQUISITOS EXTRA (além do que já está no projeto)
+================================================================================
+
+O projeto de referência JÁ usa (não remover salvo indicação em contrário):
+  • Python 3
+  • Playwright (Chromium) — automação de browser
+  • BeautifulSoup4 — parsing HTML / extração de tabelas
+  • FastAPI + Uvicorn — API REST
+  • SQLite — persistência local
+  • HTML + CSS + JavaScript vanilla — interface (sem React/Vue)
+  • openpyxl — export Excel (.xlsx)
+  • OpenAI (GPT-4o-mini) — assistente de filtros (opcional, OPENAI_API_KEY)
+  • python-dotenv — carregar .env
+
+Se for preciso SUBSTITUIR ou ACRESCENTAR, escreve aqui (ex.: "usar Selenium",
+"só script sem interface", "PostgreSQL"):
+
+  _____________________________________________________________________________
+  _____________________________________________________________________________
+  _____________________________________________________________________________
+
+Regra para a IA ao ler a caixa acima:
+  • Preferir manter a arquitetura: camada browser (Playwright ou equivalente)
+    obtém HTML estável → BeautifulSoup extrai tabelas → estruturas em dict/list.
+  • Se pedirem Selenium: trocar só a camada de navegação, manter BS4 e modelos de dados.
+  • Se pedirem só CLI: pode omitir FastAPI e web/, manter scrape_lista.py + testes manuais.
+  • Se pedirem outra BD: trocar db_local.py mantendo a mesma interface lógica (CRUD).
+
+================================================================================
+ORDEM SUGERIDA AO COLAR ESTE PROMPT NUMA IA
+================================================================================
+1. Lê o CHECKLIST e as secções [PREENCHER] (se estiverem vazias, ignora).
+2. Implementa todos os ficheiros listados (incluindo ai_suggest.py e .env.example).
+3. Se a secção "SITE ESPECÍFICO" tiver URLs/seletores, ajusta detectWaitSelectorFromUrl,
+   DEFAULT_URL, textos de hint e, se necessário, um ramo em _goto_pagina_e_html só para
+   esse host (sem quebrar Portal nem Tryit).
+4. Se a secção "TECNOLOGIAS EXTRA" pedir mudança de stack, aplica a regra descrita lá.
+5. Antes de considerar pronto: validar na UI:
+   (1) «Analisar URL» abre modal com campos e parâmetros detetados
+   (2) «Sugerir parâmetros» com frase em PT preenche grelha + período (YYYY-MM)
+   (3) UF aparece com sigla (RJ, SP, MG…) no campo correto
+   (4) Período mês/ano altera a URL/resposta (formato BR dd/mm/aaaa)
+   (5) Primeira navegação ao Portal não dispara timeout 30s no goto
+   (6) Tabela com muitas colunas tem scroll horizontal e linhas baixas
+
+================================================================================
+FIM DO PROMPT
+================================================================================
